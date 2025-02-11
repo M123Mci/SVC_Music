@@ -13,11 +13,11 @@ KaLaOK/
 
 │ ├── lyrics/ # 歌词文件 (.lrc, .srt)
 
-│ └── music/ # 加密音乐文件 (.mflac, .mogg)
+│ └── music/ # 加密音乐文件 (.mflac, .mgg)
 
 ├── middle/ # 中间文件目录
 
-│ ├── Music/ # 解密后的音乐文件 (.flac, .ogg, .mp3, .mgg)
+│ ├── Music/ # 解密后的音乐文件 (.flac, .ogg, .mp3)
 
 │ └── ass/ # 转换后的字幕文件 (.ass)
 
@@ -40,7 +40,7 @@ python main.py
 
 程序会自动执行以下步骤：
 1. 从QQ音乐目录移动文件到对应目录(可以改路径默认Music/QQMusic)
-2. 将MFlac,MOgg转为Flac,Ogg文件
+2. 将MFlac,Mgg转为Flac,Ogg文件
 3. 将LRC,SRT歌词转换为ASS字幕
 4. 将Flac,Ogg,Mp3与ASS字幕合成KTV效果视频
 
