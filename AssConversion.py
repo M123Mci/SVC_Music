@@ -44,8 +44,8 @@ class Config:
     TITLE_Y = 50        # 标题位置
     BOTTOM_Y1 = 900     # 上行位置
     BOTTOM_Y2 = 980     # 下行位置
-    CENTER_X = 960      # 中心位置
-    MARGIN = 25         # 左右间距
+    SCREEN_WIDTH = 1920
+    SCREEN_MARGIN = 100  # 距离屏幕边缘的距离
     
     RESOLUTION = "1920x1080"
     FADE_DURATION = 0.1  # 渐变时间(秒)
@@ -53,12 +53,12 @@ class Config:
     @classmethod
     def get_left_x(cls) -> int:
         """获取左侧X坐标"""
-        return cls.CENTER_X - cls.MARGIN
+        return cls.SCREEN_MARGIN  # 从左边缘开始
         
     @classmethod
     def get_right_x(cls) -> int:
         """获取右侧X坐标"""
-        return cls.CENTER_X + cls.MARGIN
+        return cls.SCREEN_WIDTH - cls.SCREEN_MARGIN  # 从右边缘开始
 
 class LyricsConverter:
     """歌词转换器：将LRC/SRT转换为ASS格式"""
@@ -69,12 +69,31 @@ class LyricsConverter:
         self.video_dir = Path("output")        # 视频输出目录
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
+    def clean_filename(self, filename: str) -> str:
+        """清理文件名，只保留ffmpeg支持的字符"""
+        # 保留文件扩展名
+        name, ext = os.path.splitext(filename)
+        
+        # 替换规则
+        # 1. 移除所有撇号和引号
+        name = name.replace("'", "").replace('"', "")
+        # 2. 保留字母、数字、中文字符、连字符和空格
+        name = re.sub(r'[^\w\u4e00-\u9fff\- ]', '', name)
+        # 3. 将多个空格替换为单个空格
+        name = re.sub(r'\s+', ' ', name)
+        # 4. 去除首尾空格
+        name = name.strip()
+        
+        return name + ext
+
     def convert_file(self, input_path: Path):
         """转换单个歌词文件"""
         try:
             self.current_file = input_path.name
-            output_path = self.output_dir / f"{input_path.stem}.ass"
-            video_path = self.video_dir / f"{input_path.stem}.mp4"
+            # 清理输出文件名
+            clean_name = self.clean_filename(input_path.stem)
+            output_path = self.output_dir / f"{clean_name}.ass"
+            video_path = self.video_dir / f"{clean_name}.mp4"
             
             # 首先检查视频文件是否存在
             if video_path.exists():
@@ -85,6 +104,9 @@ class LyricsConverter:
             if output_path.exists():
                 print(f"→ 字幕已存在: {input_path.name}")
                 return "skipped"
+            
+            if clean_name != input_path.stem:
+                print(f"→ 清理文件名: {input_path.stem} -> {clean_name}")
             
             print(f"\n{input_path.name}")
             
@@ -355,10 +377,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         # 添加标题显示
         artist, title = self.parse_title_from_filename(Path(self.current_file).name)
         title_text = f"{artist} - {title}"
-        # 标题从开始显示到结束
         events.append(
             f"Dialogue: 0,0:00:00.00,99:00:00.00,Title,,0,0,0,,"
-            f"{{\\pos({Config.CENTER_X},{Config.TITLE_Y})\\an8}}{title_text}"
+            f"{{\\pos({Config.SCREEN_WIDTH // 2},{Config.TITLE_Y})\\an8}}{title_text}"
         )
         
         # 生成歌词事件
@@ -366,88 +387,75 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             current_line = lyrics[i]
             current_start = self.format_time(current_line.start_time)
             
-            # 判断当前行显示位置（奇数行在左，偶数行在右）
-            is_left_side = (i % 2 == 0)
-            
-            # 生成当前行（天蓝色）
-            pos_x = Config.get_left_x() if is_left_side else Config.get_right_x()
-            align = "\\an6" if is_left_side else "\\an4"  # 左侧右对齐，右侧左对齐
-            y_pos = Config.BOTTOM_Y1 if is_left_side else Config.BOTTOM_Y2  # 左侧在上，右侧在下
-            
-            # 如果有下一行，检查时间间隔
             if i < len(lyrics) - 1:
                 next_line = lyrics[i + 1]
                 time_gap = next_line.start_time - current_line.start_time
                 
                 if time_gap > 15:  # 如果间隔超过15秒
-                    # 当前行显示到结束后再加3秒
                     current_end = self.format_time(current_line.end_time + 6)
-                    # 下一行提前3秒出现（白色），到其开始时间结束
                     next_preview_start = self.format_time(next_line.start_time - 3)
                     next_actual_start = self.format_time(next_line.start_time)
                     
-                    # 生成当前行
-                    event = (
-                        f"Dialogue: 0,{current_start},{current_end},Current,,0,0,0,,"
-                        f"{{\\pos({pos_x},{y_pos}){align}}}{current_line.text}"
-                    )
-                    events.append(event)
-                    
-                    # 生成下一行预览（白色）
-                    next_pos_x = Config.get_right_x() if is_left_side else Config.get_left_x()
-                    next_align = "\\an4" if is_left_side else "\\an6"
-                    next_y_pos = Config.BOTTOM_Y2 if is_left_side else Config.BOTTOM_Y1
-                    
-                    # 白色预览显示到实际开始时间
-                    event = (
-                        f"Dialogue: 0,{next_preview_start},{next_actual_start},Other,,0,0,0,,"
-                        f"{{\\pos({next_pos_x},{next_y_pos}){next_align}}}{next_line.text}"
-                    )
-                    events.append(event)
-                    
-                    if i < len(lyrics) - 2:  # 如果不是最后一句
-                        next_next_line = lyrics[i + 2]
-                        # 变成蓝色后显示到下一句开始
-                        event = (
-                            f"Dialogue: 0,{next_actual_start},{self.format_time(next_next_line.start_time)},Current,,0,0,0,,"
-                            f"{{\\pos({next_pos_x},{next_y_pos}){next_align}}}{next_line.text}"
+                    if i % 2 == 0:  # 偶数行
+                        # 当前行（有颜色）在左上
+                        events.append(
+                            f"Dialogue: 0,{current_start},{current_end},Current,,0,0,0,,"
+                            f"{{\\pos({Config.get_left_x()},{Config.BOTTOM_Y1})\\an1}}{current_line.text}"
                         )
-                    else:
-                        # 最后一句显示到其结束时间
-                        event = (
-                            f"Dialogue: 0,{next_actual_start},{self.format_time(next_line.end_time)},Current,,0,0,0,,"
-                            f"{{\\pos({next_pos_x},{next_y_pos}){next_align}}}{next_line.text}"
+                        # 下一行（白色）在右下
+                        events.append(
+                            f"Dialogue: 0,{next_preview_start},{next_actual_start},Other,,0,0,0,,"
+                            f"{{\\pos({Config.get_right_x()},{Config.BOTTOM_Y2})\\an3}}{next_line.text}"
                         )
-                    events.append(event)
+                    else:  # 奇数行
+                        # 当前行（有颜色）在右下
+                        events.append(
+                            f"Dialogue: 0,{current_start},{current_end},Current,,0,0,0,,"
+                            f"{{\\pos({Config.get_right_x()},{Config.BOTTOM_Y2})\\an3}}{current_line.text}"
+                        )
+                        # 下一行（白色）在左上
+                        events.append(
+                            f"Dialogue: 0,{next_preview_start},{next_actual_start},Other,,0,0,0,,"
+                            f"{{\\pos({Config.get_left_x()},{Config.BOTTOM_Y1})\\an1}}{next_line.text}"
+                        )
                 else:
-                    # 正常情况，当前行显示到下一行开始
                     current_end = self.format_time(next_line.start_time)
                     
-                    # 生成当前行
-                    event = (
-                        f"Dialogue: 0,{current_start},{current_end},Current,,0,0,0,,"
-                        f"{{\\pos({pos_x},{y_pos}){align}}}{current_line.text}"
-                    )
-                    events.append(event)
-                    
-                    # 生成下一行预览（白色）
-                    next_pos_x = Config.get_right_x() if is_left_side else Config.get_left_x()
-                    next_align = "\\an4" if is_left_side else "\\an6"
-                    next_y_pos = Config.BOTTOM_Y2 if is_left_side else Config.BOTTOM_Y1
-                    
-                    event = (
-                        f"Dialogue: 0,{current_start},{current_end},Other,,0,0,0,,"
-                        f"{{\\pos({next_pos_x},{next_y_pos}){next_align}}}{next_line.text}"
-                    )
-                    events.append(event)
+                    if i % 2 == 0:  # 偶数行
+                        # 当前行（有颜色）在左上
+                        events.append(
+                            f"Dialogue: 0,{current_start},{current_end},Current,,0,0,0,,"
+                            f"{{\\pos({Config.get_left_x()},{Config.BOTTOM_Y1})\\an1}}{current_line.text}"
+                        )
+                        # 下一行（白色）在右下
+                        events.append(
+                            f"Dialogue: 0,{current_start},{current_end},Other,,0,0,0,,"
+                            f"{{\\pos({Config.get_right_x()},{Config.BOTTOM_Y2})\\an3}}{next_line.text}"
+                        )
+                    else:  # 奇数行
+                        # 当前行（有颜色）在右下
+                        events.append(
+                            f"Dialogue: 0,{current_start},{current_end},Current,,0,0,0,,"
+                            f"{{\\pos({Config.get_right_x()},{Config.BOTTOM_Y2})\\an3}}{current_line.text}"
+                        )
+                        # 下一行（白色）在左上
+                        events.append(
+                            f"Dialogue: 0,{current_start},{current_end},Other,,0,0,0,,"
+                            f"{{\\pos({Config.get_left_x()},{Config.BOTTOM_Y1})\\an1}}{next_line.text}"
+                        )
             else:
-                # 最后一行显示到其结束时间
+                # 最后一行
                 current_end = self.format_time(current_line.end_time)
-                event = (
-                    f"Dialogue: 0,{current_start},{current_end},Current,,0,0,0,,"
-                    f"{{\\pos({pos_x},{y_pos}){align}}}{current_line.text}"
-                )
-                events.append(event)
+                if i % 2 == 0:  # 偶数行，在左上
+                    events.append(
+                        f"Dialogue: 0,{current_start},{current_end},Current,,0,0,0,,"
+                        f"{{\\pos({Config.get_left_x()},{Config.BOTTOM_Y1})\\an1}}{current_line.text}"
+                    )
+                else:  # 奇数行，在右下
+                    events.append(
+                        f"Dialogue: 0,{current_start},{current_end},Current,,0,0,0,,"
+                        f"{{\\pos({Config.get_right_x()},{Config.BOTTOM_Y2})\\an3}}{current_line.text}"
+                    )
         
         return events
 
