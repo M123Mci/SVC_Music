@@ -1,5 +1,7 @@
 # SVC_Music
 Singing video creation
+一键将QQ音乐下载下来的音乐生成带字幕的k歌视频
+QQ音乐需要开启下载字幕
 
 解密功能
 mflac,mogg --> flac,ogg
