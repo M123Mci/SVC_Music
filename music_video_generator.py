@@ -52,6 +52,10 @@ class MusicVideoGenerator:
             print(f"创建缓存目录失败: {str(e)}")
             raise
         
+        # 添加缓存前缀（使用音频文件名）
+        self.cache_prefix = clean_filename(os.path.splitext(os.path.basename(audio_path))[0])
+        print(f"缓存前缀: {self.cache_prefix}")
+        
     def process_image(self, image_path, output_path, is_pil_image=False):
         """将图片处理成1920x1080，尽可能占满屏幕，保持比例"""
         try:
@@ -94,7 +98,7 @@ class MusicVideoGenerator:
             print(f"处理图片失败 {image_path}: {str(e)}")
             raise
         
-    def create_slideshow(self, duration_per_image=8):
+    def create_slideshow(self, duration_per_image=5):
         """创建图片轮播视频"""
         try:
             # 使用类的缓存目录
@@ -144,12 +148,28 @@ class MusicVideoGenerator:
             
             try:
                 print("正在处理背景图片...")
-                self.processed_files = []  # 保存为类属性
+                self.processed_files = []
                 
                 for i, img_path in enumerate(images):
+                    # 获取图片文件名（不含扩展名）作为标识
+                    img_name = clean_filename(os.path.splitext(os.path.basename(img_path))[0])
                     is_gif = img_path.lower().endswith('.gif')
-                    output_path = self.temp_dir / f"{i:04d}.mp4"
+                    
+                    # 使用图片名称命名缓存文件
+                    if is_gif:
+                        output_path = self.temp_dir / f"{img_name}_gif.mp4"
+                    else:
+                        # 处理静态图片
+                        img_output = self.temp_dir / f"{img_name}.jpg"
+                        output_path = self.temp_dir / f"{img_name}.mp4"
+                    
                     print(f"处理图片 {i+1}/{len(images)}: {os.path.basename(img_path)}")
+                    
+                    # 检查是否已存在处理过的文件
+                    if output_path.exists():
+                        print(f"使用已存在的缓存: {output_path.name}")
+                        self.processed_files.append(output_path)
+                        continue
                     
                     if is_gif:
                         # 处理 GIF，先获取 GIF 的原始时长
@@ -188,7 +208,6 @@ class MusicVideoGenerator:
                         )
                     else:
                         # 处理静态图片
-                        img_output = self.temp_dir / f"{i:04d}.jpg"
                         self.process_image(img_path, str(img_output))
                         (
                             ffmpeg.input(str(img_output), loop=1)
@@ -223,8 +242,8 @@ class MusicVideoGenerator:
                     print(f"无法获取音频时长，使用默认值: {str(e)}")
                     self.audio_duration = 600  # 默认10分钟
                 
-                # 创建文件列表
-                self.concat_file = self.temp_dir / "concat.txt"
+                # 使用前缀命名连接文件
+                self.concat_file = self.temp_dir / f"{self.cache_prefix}_concat.txt"
                 with open(self.concat_file, 'w', encoding='utf-8') as f:
                     # 计算需要重复的次数，确保覆盖整个音频时长
                     total_duration = len(self.processed_files) * duration_per_image
@@ -430,7 +449,8 @@ class MusicVideoGenerator:
 
                 try:
                     # 第一步：处理视频序列
-                    temp_video = self.cache_dir / "temp_video.mp4"
+                    temp_video = self.cache_dir / f"{self.cache_prefix}_temp_video.mp4"
+                    temp_output = self.cache_dir / f"{self.cache_prefix}_output.mp4"
                     video_output = (
                         ffmpeg
                         .input(str(self.concat_file), f='concat', safe=0)
@@ -455,6 +475,10 @@ class MusicVideoGenerator:
                     
                     print("→ 生成基础视频...")
                     video_output.run(overwrite_output=True, capture_stdout=True, capture_stderr=True)
+                    
+                    # 输出基础视频大小
+                    base_size_mb = os.path.getsize(temp_video) / (1024 * 1024)
+                    print(f"  基础视频大小: {base_size_mb:.1f}MB")
                     
                     # 第二步：添加字幕和音频
                     video_input = ffmpeg.input(str(temp_video))
@@ -491,6 +515,14 @@ class MusicVideoGenerator:
                     print("→ 添加字幕和音频...")
                     final_output.run(overwrite_output=True, capture_stdout=True, capture_stderr=True)
                     
+                    # 删除临时视频文件
+                    if temp_video.exists():
+                        temp_video.unlink()
+                    
+                    # 输出最终视频大小
+                    final_size_mb = os.path.getsize(temp_output) / (1024 * 1024)
+                    print(f"  最终视频大小: {final_size_mb:.1f}MB")
+                    
                     # 移动到最终位置
                     shutil.move(temp_output, self.output_path)
                     print("✓ 处理完成")
@@ -514,24 +546,35 @@ class MusicVideoGenerator:
             self.clean_cache()
 
     def clean_cache(self):
-        """清理缓存目录内的临时视频文件，保留处理后的图片"""
+        """清理所有中间文件，包括临时视频、图片和连接文件"""
         if self.cache_dir and self.cache_dir.exists():
             try:
-                # 需要删除的临时文件
-                temp_files = [
-                    "temp_video.mp4",
-                    "output.mp4",
-                    "concat.txt"
+                # 需要删除的文件类型
+                temp_patterns = [
+                    # 临时视频文件
+                    f"{self.cache_prefix}_temp_video.mp4",
+                    f"{self.cache_prefix}_output.mp4",
+                    # 连接文件
+                    f"{self.cache_prefix}_concat.txt",
+                    # 处理后的图片和视频片段
+                    "*.jpg",  # 处理后的静态图片
+                    "*.mp4"   # 处理后的视频片段（包括GIF转换的）
                 ]
                 
-                # 只删除特定的临时文件
-                for filename in temp_files:
-                    file_path = self.cache_dir / filename
+                # 删除所有临时文件
+                for pattern in temp_patterns:
                     try:
-                        if file_path.exists():
-                            file_path.unlink()
+                        # 使用 glob 处理通配符
+                        if '*' in pattern:
+                            for file_path in self.cache_dir.glob(pattern):
+                                if file_path.exists():
+                                    file_path.unlink()
+                        else:
+                            file_path = self.cache_dir / pattern
+                            if file_path.exists():
+                                file_path.unlink()
                     except Exception as e:
-                        print(f"清理文件失败 {filename}: {str(e)}")
+                        print(f"清理文件失败 {pattern}: {str(e)}")
                         
             except Exception as e:
                 print(f"清理缓存目录失败: {str(e)}")
