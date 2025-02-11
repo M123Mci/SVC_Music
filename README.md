@@ -59,3 +59,10 @@ python main.py
 - `AssConversion.py`: 歌词转换为ASS字幕
 - `music_video_generator.py`: 生成KTV视频
 - `hook_qq_music.js`: Frida脚本用于解密
+
+
+
+
+
+
+代码目前未完善仅可用阶段
