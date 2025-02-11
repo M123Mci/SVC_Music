@@ -6,6 +6,7 @@ mflac,mogg --> flac,ogg
 https://github.com/yllhwa/decrypt-mflac-frida
 
 KaLaOK/
+
 ├── input/ # 输入文件目录
 │ ├── lyrics/ # 歌词文件 (.lrc, .srt)
 │ └── music/ # 加密音乐文件 (.mflac, .mgg)
@@ -13,7 +14,7 @@ KaLaOK/
 │ ├── Music/ # 解密后的音乐文件 (.flac, .ogg, .mp3)
 │ └── ass/ # 转换后的字幕文件 (.ass)
 └── output/ # 输出目录，存放生成的视频文件
-bash
+
 python main.py
 
 
