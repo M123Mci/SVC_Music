@@ -12,26 +12,63 @@ import psutil
 import GPUtil
 from datetime import datetime
 import subprocess
+import random
+import math
 
 class MusicVideoGenerator:
     def __init__(self, audio_path, ass_path, output_path, images_dir=None):
         self.audio_path = audio_path
         self.ass_path = ass_path
         self.output_path = output_path
-        self.images_dir = images_dir  # 可以为 None
+        self.images_dir = images_dir if images_dir else "input/images"
         self.target_width = 1920
         self.target_height = 1080
         
-    def process_image(self, image_path, output_path):
-        """将图片处理成1920x1080，保持比例，多余部分用黑色填充"""
-        with Image.open(image_path) as img:
+        # 获取项目根目录（假设当前文件在项目根目录下）
+        project_root = os.path.dirname(os.path.abspath(__file__))
+        
+        # 创建缓存目录（使用绝对路径）
+        cache_path = os.path.join(project_root, "middle", "cache")
+        
+        # 直接使用 os.makedirs 创建目录
+        try:
+            if not os.path.exists(cache_path):
+                os.makedirs(cache_path)
+            self.cache_dir = Path(cache_path)
+            self.auto_clean = False  # 添加自动清理标志
+            print(f"使用缓存目录: {self.cache_dir}")
+            
+            # 验证目录是否可写
+            test_file = self.cache_dir / "test.txt"
+            try:
+                with open(test_file, 'w') as f:
+                    f.write('test')
+                os.remove(test_file)
+            except Exception as e:
+                print(f"缓存目录无写入权限: {str(e)}")
+                raise
+                
+        except Exception as e:
+            print(f"创建缓存目录失败: {str(e)}")
+            raise
+        
+    def process_image(self, image_path, output_path, is_pil_image=False):
+        """将图片处理成1920x1080，尽可能占满屏幕，保持比例"""
+        try:
+            if is_pil_image:
+                img = image_path  # 直接使用传入的PIL Image对象
+            else:
+                img = Image.open(image_path)
+            
             # 创建黑色背景
             background = Image.new('RGB', (self.target_width, self.target_height), 'black')
             
             # 计算缩放比例
             width_ratio = self.target_width / img.width
             height_ratio = self.target_height / img.height
-            scale_ratio = min(width_ratio, height_ratio)
+            
+            # 使用较大的缩放比例，让图片尽可能大
+            scale_ratio = max(width_ratio, height_ratio)
             
             # 计算缩放后的尺寸
             new_width = int(img.width * scale_ratio)
@@ -49,55 +86,178 @@ class MusicVideoGenerator:
             
             # 保存处理后的图片
             background.save(output_path, 'JPEG', quality=95)
+            
+            if not is_pil_image:
+                img.close()
+                
+        except Exception as e:
+            print(f"处理图片失败 {image_path}: {str(e)}")
+            raise
         
-    def create_slideshow(self, duration_per_image=5):
+    def create_slideshow(self, duration_per_image=8):
         """创建图片轮播视频"""
-        if not self.images_dir or not os.path.exists(self.images_dir):
-            print("未找到背景图片，将使用纯白色背景")
-            stream = ffmpeg.input(
-                'color=c=white:s=1920x1080',
-                f='lavfi',
-                t=3600,
-                r=24  # 设置帧率为24fps
-            )
-            return stream, self.target_width, self.target_height
-        
-        images = glob.glob(os.path.join(self.images_dir, "*.[jJ][pP][gG]"))
-        
-        if not images:
-            print("未找到背景图片，将使用纯白色背景")
-            stream = ffmpeg.input(
-                'color=c=white:s=1920x1080',
-                f='lavfi',
-                t=3600,
-                r=24  # 设置帧率为24fps
-            )
-            return stream, self.target_width, self.target_height
-        
-        # 创建临时目录存放处理后的图片
-        temp_dir = tempfile.mkdtemp()
-        processed_images = []
-        
         try:
-            print("正在处理背景图片...")
-            for i, img_path in enumerate(images):
-                output_path = os.path.join(temp_dir, f"processed_{i}.jpg")
-                self.process_image(img_path, output_path)
-                processed_images.append(output_path)
+            # 使用类的缓存目录
+            self.temp_dir = self.cache_dir
+            print(f"使用缓存目录: {self.temp_dir}")
             
-            # 创建图片轮播视频流
-            stream = ffmpeg.input(
-                f"concat:{','.join(processed_images)}", 
-                pattern_type='glob',
-                framerate=1/duration_per_image,
-                r=24  # 设置帧率为24fps
-            )
+            # 先清理旧的缓存文件
+            self.clean_cache()
             
-            return stream, self.target_width, self.target_height
+            if not self.images_dir or not os.path.exists(self.images_dir):
+                print("未找到背景图片，将使用纯白色背景")
+                stream = ffmpeg.input(
+                    'color=c=white:s=1920x1080',
+                    f='lavfi',
+                    t=3600,
+                    r=24
+                )
+                return stream, self.target_width, self.target_height
             
-        finally:
-            # 清理临时文件
-            shutil.rmtree(temp_dir)
+            # 支持多种图片格式
+            supported_formats = [
+                "*.[jJ][pP][gG]",
+                "*.[jJ][pP][eE][gG]",
+                "*.[pP][nN][gG]",
+                "*.[gG][iI][fF]",
+                "*.[bB][mM][pP]",
+                "*.[wW][eE][bB][pP]"
+            ]
+            
+            # 收集所有支持格式的图片
+            images = []
+            for format_pattern in supported_formats:
+                images.extend(glob.glob(os.path.join(self.images_dir, format_pattern)))
+            
+            if not images:
+                print("未找到背景图片，将使用纯白色背景")
+                stream = ffmpeg.input(
+                    'color=c=white:s=1920x1080',
+                    f='lavfi',
+                    t=3600,
+                    r=24
+                )
+                return stream, self.target_width, self.target_height
+            
+            # 随机打乱图片顺序
+            random.shuffle(images)
+            
+            try:
+                print("正在处理背景图片...")
+                self.processed_files = []  # 保存为类属性
+                
+                for i, img_path in enumerate(images):
+                    is_gif = img_path.lower().endswith('.gif')
+                    output_path = self.temp_dir / f"{i:04d}.mp4"
+                    print(f"处理图片 {i+1}/{len(images)}: {os.path.basename(img_path)}")
+                    
+                    if is_gif:
+                        # 处理 GIF，先获取 GIF 的原始时长
+                        probe = ffmpeg.probe(img_path)
+                        gif_duration = float(probe['streams'][0]['duration'])
+                        
+                        # 计算需要循环的次数以达到目标时长
+                        loop_count = math.ceil(duration_per_image / gif_duration)
+                        
+                        # 处理 GIF
+                        (
+                            ffmpeg.input(img_path, stream_loop=loop_count-1)
+                            .filter('scale', 
+                                f'if(gte(iw/ih,{self.target_width}/{self.target_height}),'
+                                f'{self.target_width},-1)',  # 改为直接使用目标宽度
+                                f'if(gte(iw/ih,{self.target_width}/{self.target_height}),'
+                                f'-1,{self.target_height})'  # 改为直接使用目标高度
+                            )
+                            .filter('pad',
+                                self.target_width,
+                                self.target_height,
+                                '(ow-iw)/2',
+                                '(oh-ih)/2',
+                                'black'
+                            )
+                            .filter('fps', fps=24)
+                            .output(
+                                str(output_path),
+                                t=duration_per_image,  # 精确控制输出时长
+                                vcodec='libx264',
+                                preset='ultrafast',
+                                pix_fmt='yuv420p'
+                            )
+                            .overwrite_output()
+                            .run(capture_stdout=True, capture_stderr=True)
+                        )
+                    else:
+                        # 处理静态图片
+                        img_output = self.temp_dir / f"{i:04d}.jpg"
+                        self.process_image(img_path, str(img_output))
+                        (
+                            ffmpeg.input(str(img_output), loop=1)
+                            .filter('fps', fps=24)
+                            .output(
+                                str(output_path),
+                                t=duration_per_image,  # 精确控制输出时长
+                                vcodec='libx264',
+                                preset='ultrafast',
+                                pix_fmt='yuv420p'
+                            )
+                            .overwrite_output()
+                            .run(capture_stdout=True, capture_stderr=True)
+                        )
+                    
+                    # 验证输出文件的时长
+                    try:
+                        probe = ffmpeg.probe(str(output_path))
+                        actual_duration = float(probe['streams'][0]['duration'])
+                        if abs(actual_duration - duration_per_image) > 0.1:  # 允许0.1秒的误差
+                            print(f"警告: 片段时长不准确 ({actual_duration:.1f}s)")
+                    except Exception as e:
+                        print(f"警告: 无法验证片段时长: {str(e)}")
+                    
+                    self.processed_files.append(output_path)
+                
+                # 获取音频时长
+                try:
+                    probe = ffmpeg.probe(self.audio_path)
+                    self.audio_duration = float(probe['format']['duration'])
+                except Exception as e:
+                    print(f"无法获取音频时长，使用默认值: {str(e)}")
+                    self.audio_duration = 600  # 默认10分钟
+                
+                # 创建文件列表
+                self.concat_file = self.temp_dir / "concat.txt"
+                with open(self.concat_file, 'w', encoding='utf-8') as f:
+                    # 计算需要重复的次数，确保覆盖整个音频时长
+                    total_duration = len(self.processed_files) * duration_per_image
+                    self.repeat_count = math.ceil(self.audio_duration / total_duration)
+                    
+                    # 重复写入文件列表
+                    for _ in range(self.repeat_count):
+                        for file in self.processed_files:
+                            rel_path = os.path.relpath(file, self.temp_dir)
+                            safe_path = rel_path.replace('\\', '/')
+                            f.write(f"file '{safe_path}'\n")
+                            f.write(f"duration {duration_per_image}\n")
+                
+                # 创建最终的视频流
+                stream = (
+                    ffmpeg
+                    .input(str(self.concat_file), f='concat', safe=0)
+                    .filter('fps', fps=24)
+                    .filter('format', 'yuv420p')
+                )
+                
+                print(f"共处理 {len(self.processed_files)} 个图片/动画")
+                print(f"单轮时长: {total_duration:.1f}秒")
+                print(f"重复次数: {self.repeat_count}")
+                print(f"总视频时长: {total_duration * self.repeat_count:.1f}秒")
+                return stream, self.target_width, self.target_height
+                
+            except Exception as e:
+                self.clean_cache()  # 出错时清理
+                raise
+        except Exception as e:
+            self.clean_cache()  # 出错时清理
+            raise
     
     def calculate_max_font_size(self, ass_path: str) -> int:
         """计算最佳字体大小"""
@@ -207,155 +367,174 @@ class MusicVideoGenerator:
             return False
 
     def generate_video(self):
-        # 创建视频
-        if self.images_dir and os.path.exists(self.images_dir):
-            # 使用背景图片
-            image_files = [f for f in os.listdir(self.images_dir) 
-                          if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
-            if image_files:
-                background = os.path.join(self.images_dir, image_files[0])
-        else:
-            background = None
-        
-        # 创建图片轮播
-        video_stream, width, height = self.create_slideshow()
-        
-        # 处理音频输入
-        audio_stream = ffmpeg.input(self.audio_path)
-        
-        # 获取音频文件信息
         try:
-            probe = ffmpeg.probe(self.audio_path)
-            audio_info = next(s for s in probe['streams'] if s['codec_type'] == 'audio')
+            # 创建视频流
+            video_stream, width, height = self.create_slideshow()
             
-            # 获取音频参数
-            sample_rate = audio_info.get('sample_rate', '44100')
-            bit_rate = audio_info.get('bit_rate', '320k')
-            channels = audio_info.get('channels', 2)
+            # 处理音频输入
+            audio_stream = ffmpeg.input(self.audio_path)
             
-            print(f"源文件音频信息:")
-            print(f"采样率: {sample_rate}Hz")
-            print(f"比特率: {bit_rate}bps")
-            print(f"声道数: {channels}")
+            # 获取音频文件信息（静默处理）
+            try:
+                probe = ffmpeg.probe(self.audio_path)
+                audio_info = next(s for s in probe['streams'] if s['codec_type'] == 'audio')
+                sample_rate = audio_info.get('sample_rate', '44100')
+                bit_rate = audio_info.get('bit_rate', '320k')
+                channels = audio_info.get('channels', 2)
+            except Exception:
+                sample_rate = '44100'
+                bit_rate = '320k'
+                channels = 2
             
-        except Exception as e:
-            print(f"无法读取音频信息，使用默认参数: {str(e)}")
-            sample_rate = '44100'
-            bit_rate = '320k'
-            channels = 2
-        
-        # 将路径转换为适合 FFmpeg 的格式
-        ass_path = self.ass_path.replace('\\', '/')
-        
-        # 计算适合的字体大小
-        font_size = self.calculate_max_font_size(self.ass_path)
-        
-        # 调整字幕位置和缩放
-        style_params = [
-            f"FontSize={font_size}",
-            "MarginV=120",        # 增加垂直边距
-            "MarginL=160",        # 增加左边距
-            "MarginR=160",        # 增加右边距
-            "Alignment=8",        # 改为顶部对齐
-            "ScaleX=1",          # 不缩放
-            "ScaleY=1",          # 不缩放
-            "BorderStyle=1",      # 边框样式
-            "Bold=1",            # 加粗
-            "Outline=3",         # 增加描边宽度
-            "Shadow=1",          # 添加阴影
-            "ShadowDepth=2",     # 阴影深度
-            "PlayResX=1920",     # 指定分辨率
-            "PlayResY=1080"      # 指定分辨率
-        ]
-        
-        # 检测显卡支持（静默执行）
-        try:
-            with open(os.devnull, 'w') as devnull:
-                probe_result = subprocess.check_output('ffmpeg -hide_banner -hwaccels', stderr=devnull, shell=True).decode()
-                encoders_result = subprocess.check_output('ffmpeg -hide_banner -encoders | findstr nvenc', stderr=devnull, shell=True).decode()
+            # 计算字体大小
+            font_size = self.calculate_max_font_size(self.ass_path)
             
-            hw_accel = 'cuda' if 'cuda' in probe_result.lower() and 'h264_nvenc' in encoders_result.lower() else 'none'
-        except:
-            hw_accel = 'none'
-
-        try:
-            print("\n开始处理视频...")
-            start_time = datetime.now()
-
-            # 获取音频总时长
-            probe = ffmpeg.probe(self.audio_path)
-            duration = float(probe['format']['duration'])
-            print(f"视频长度: {duration/60:.1f}分钟")
-
-            # 使用时间戳和随机数生成唯一的临时文件名
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            random_suffix = os.urandom(4).hex()
-            temp_prefix = f"temp_{timestamp}_{random_suffix}"
+            # 将路径转换为适合 FFmpeg 的格式
+            ass_path = self.ass_path.replace('\\', '/')
             
-            # 创建临时文件（使用规范化的路径）
-            output_dir = os.path.dirname(os.path.abspath(self.output_path))
-            temp_output = os.path.normpath(os.path.join(output_dir, f"{temp_prefix}_output.mp4"))
-
-            # 确保输出目录存在
-            os.makedirs(output_dir, exist_ok=True)
+            # 调整字幕位置和缩放
+            style_params = [
+                f"FontSize={font_size}",
+                "MarginV=120",        # 增加垂直边距
+                "MarginL=160",        # 增加左边距
+                "MarginR=160",        # 增加右边距
+                "Alignment=8",        # 改为顶部对齐
+                "ScaleX=1",          # 不缩放
+                "ScaleY=1",          # 不缩放
+                "BorderStyle=1",      # 边框样式
+                "Bold=1",            # 加粗
+                "Outline=3",         # 增加描边宽度
+                "Shadow=1",          # 添加阴影
+                "ShadowDepth=2",     # 阴影深度
+                "PlayResX=1920",     # 指定分辨率
+                "PlayResY=1080"      # 指定分辨率
+            ]
+            
+            # 检测显卡支持（静默执行）
+            try:
+                with open(os.devnull, 'w') as devnull:
+                    probe_result = subprocess.check_output('ffmpeg -hide_banner -hwaccels', stderr=devnull, shell=True).decode()
+                    encoders_result = subprocess.check_output('ffmpeg -hide_banner -encoders | findstr nvenc', stderr=devnull, shell=True).decode()
+                
+                hw_accel = 'cuda' if 'cuda' in probe_result.lower() and 'h264_nvenc' in encoders_result.lower() else 'none'
+            except:
+                hw_accel = 'none'
 
             try:
-                # 使用GPU直接处理完整视频
-                output = ffmpeg.output(
-                    video_stream,
-                    audio_stream,
-                    temp_output,
-                    **{
-                        'acodec': 'aac',
-                        'audio_bitrate': bit_rate,
-                        'ar': sample_rate,
-                        'ac': channels,
-                        'vf': (f"subtitles='{ass_path}'"
-                              f":force_style='{','.join(style_params)}'"
-                              ":original_size=1920x1080"),  # 指定原始尺寸
-                        'shortest': None,
-                        'pix_fmt': 'yuv420p',
-                        'r': 24,
-                        'vcodec': 'h264_nvenc',
-                        'preset': 'p7',
-                        'rc': 'vbr',
-                        'cq': 18,
-                        'b:v': '5M',
-                        'maxrate': '10M',
-                        'bufsize': '10M',
-                        'spatial_aq': 1,
-                        'temporal_aq': 1,
-                        'loglevel': 'error'  # 只显示错误信息
-                    }
-                )
+                print("\n开始处理视频...")
                 
-                # 静默执行ffmpeg命令
-                output.run(overwrite_output=True, capture_stdout=True, capture_stderr=True)
-                
-                # 移动临时文件到最终位置
-                shutil.move(temp_output, self.output_path)
-                print("✓ 视频处理完成")
+                # 获取音频时长
+                probe = ffmpeg.probe(self.audio_path)
+                duration = float(probe['format']['duration'])
+                print(f"视频时长: {duration/60:.1f}分钟")
 
-                end_time = datetime.now()
-                print(f"耗时: {(end_time - start_time).total_seconds():.1f}秒")
+                try:
+                    # 第一步：处理视频序列
+                    temp_video = self.cache_dir / "temp_video.mp4"
+                    video_output = (
+                        ffmpeg
+                        .input(str(self.concat_file), f='concat', safe=0)
+                        .filter('fps', fps=24)
+                        .filter('format', 'yuv420p')
+                        .output(
+                            str(temp_video),
+                            t=duration,
+                            vcodec='h264_nvenc',
+                            preset='p7',           # 最高质量预设
+                            rc='vbr',             # 可变比特率
+                            cq=20,                # 较低的 CQ 值保持画质
+                            b='800k',             # 目标比特率
+                            maxrate='1.5M',       # 最大比特率
+                            bufsize='1.5M',       # 缓冲大小
+                            spatial_aq=1,         # 空间自适应量化
+                            temporal_aq=1,        # 时间自适应量化
+                            profile='high',       # 高规格编码
+                            level='4.1'           # 兼容级别
+                        )
+                    )
+                    
+                    print("→ 生成基础视频...")
+                    video_output.run(overwrite_output=True, capture_stdout=True, capture_stderr=True)
+                    
+                    # 第二步：添加字幕和音频
+                    video_input = ffmpeg.input(str(temp_video))
+                    audio_input = ffmpeg.input(self.audio_path)
+                    
+                    final_output = (
+                        ffmpeg
+                        .output(
+                            video_input,
+                            audio_input,
+                            str(temp_output),
+                            acodec='aac',
+                            audio_bitrate=bit_rate,
+                            ar=sample_rate,
+                            ac=channels,
+                            vf=f"subtitles='{ass_path}'"
+                               f":force_style='{','.join(style_params)}'"
+                               ":original_size=1920x1080",
+                            shortest=None,
+                            vcodec='h264_nvenc',
+                            preset='p7',
+                            rc='vbr',
+                            cq=20,
+                            b='800k',
+                            maxrate='1.5M',
+                            bufsize='1.5M',
+                            spatial_aq=1,
+                            temporal_aq=1,
+                            profile='high',
+                            level='4.1'
+                        )
+                    )
+                    
+                    print("→ 添加字幕和音频...")
+                    final_output.run(overwrite_output=True, capture_stdout=True, capture_stderr=True)
+                    
+                    # 移动到最终位置
+                    shutil.move(temp_output, self.output_path)
+                    print("✓ 处理完成")
 
-            except ffmpeg.Error as e:
-                error_message = e.stderr.decode() if e.stderr else str(e)
-                # 只显示最后一行错误信息
-                error_message = error_message.strip().split('\n')[-1]
-                print(f"视频处理失败: {error_message}")
+                except ffmpeg.Error as e:
+                    error_message = e.stderr.decode() if e.stderr else str(e)
+                    print(f"! 处理失败: {error_message}")
+                    raise
+
+            except Exception as e:
+                print(f"! 处理失败: {str(e)}")
                 raise
 
         except Exception as e:
-            print(f"\n视频处理失败: {str(e)}")
+            print(f"! 处理失败: {str(e)}")
             raise
-        finally:
-            # 清理临时文件（静默执行）
+
+    def __del__(self):
+        """析构函数：根据设置决定是否清理缓存"""
+        if self.auto_clean:  # 只在需要时清理
+            self.clean_cache()
+
+    def clean_cache(self):
+        """清理缓存目录内的临时视频文件，保留处理后的图片"""
+        if self.cache_dir and self.cache_dir.exists():
             try:
-                if os.path.exists(temp_output):
-                    os.remove(temp_output)
-            except:
-                pass
+                # 需要删除的临时文件
+                temp_files = [
+                    "temp_video.mp4",
+                    "output.mp4",
+                    "concat.txt"
+                ]
+                
+                # 只删除特定的临时文件
+                for filename in temp_files:
+                    file_path = self.cache_dir / filename
+                    try:
+                        if file_path.exists():
+                            file_path.unlink()
+                    except Exception as e:
+                        print(f"清理文件失败 {filename}: {str(e)}")
+                        
+            except Exception as e:
+                print(f"清理缓存目录失败: {str(e)}")
 
 def clean_filename(filename: str) -> str:
     """清理文件名，只保留ffmpeg支持的字符"""

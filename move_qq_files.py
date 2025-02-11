@@ -35,8 +35,8 @@ def move_music_files():
     
     # 定义文件类型映射
     lyrics_extensions = {'.lrc', '.srt'}
-    encrypted_music_extensions = {'.mflac', '.mgg'}
-    middle_extensions = {'.ogg', '.flac', '.mp3'}
+    encrypted_music_extensions = {'.mgg', '.mflac'}
+    middle_extensions = {'.ogg', '.flac', '.mp3', '.mgg'}
     
     # 统计移动的文件数
     moved_files = {
