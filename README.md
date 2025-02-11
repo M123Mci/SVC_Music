@@ -39,10 +39,10 @@ python main.py
 
 
 程序会自动执行以下步骤：
-1. 从QQ音乐目录移动文件到对应目录
-2. 解密加密的音乐文件
-3. 将LRC歌词转换为ASS字幕
-4. 生成KTV效果视频
+1. 从QQ音乐目录移动文件到对应目录(可以改路径默认Music/QQMusic)
+2. 将MFlac,MOgg转为Flac,Ogg文件
+3. 将LRC,SRT歌词转换为ASS字幕
+4. 将Flac,Ogg,Mp3与ASS字幕合成KTV效果视频
 
  视频效果
 - 1920x1080分辨率
