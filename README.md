@@ -13,11 +13,11 @@ KaLaOK/
 
 │ ├── lyrics/ # 歌词文件 (.lrc, .srt)
 
-│ └── music/ # 加密音乐文件 (.mflac, .mgg)
+│ └── music/ # 加密音乐文件 (.mflac, .mogg)
 
 ├── middle/ # 中间文件目录
 
-│ ├── Music/ # 解密后的音乐文件 (.flac, .ogg, .mp3)
+│ ├── Music/ # 解密后的音乐文件 (.flac, .ogg, .mp3, .mgg)
 
 │ └── ass/ # 转换后的字幕文件 (.ass)
 
