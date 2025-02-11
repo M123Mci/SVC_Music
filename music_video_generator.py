@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 import ffmpeg
-from PIL import Image
+from PIL import Image, ImageFont, ImageDraw
 import glob
 import tempfile
 import shutil
@@ -99,46 +99,72 @@ class MusicVideoGenerator:
             # 清理临时文件
             shutil.rmtree(temp_dir)
     
-    def calculate_max_font_size(self, ass_path, base_font_size=60, max_width=1850):
-        """计算最大可用字体大小"""
+    def calculate_max_font_size(self, ass_path: str) -> int:
+        """计算最佳字体大小"""
         try:
-            # 读取 ASS 文件找出最长的一行
-            max_length = 0
+            # 读取字幕文件获取所有歌词行
             with open(ass_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    if line.startswith('Dialogue:'):
-                        # 提取文本内容
-                        text = line.split(',')[-1].strip()
-                        # 移除 ASS 标签
-                        text = re.sub(r'{[^}]*}', '', text)
-                        # 计算实际显示长度（中文字符算1.5个单位）
-                        display_length = sum(1.5 if '\u4e00' <= c <= '\u9fff' else 1 for c in text)
-                        max_length = max(max_length, display_length)
+                content = f.read()
             
-            if max_length == 0:
-                return base_font_size
+            # 提取所有歌词文本
+            lyrics = []
+            for line in content.split('\n'):
+                if line.startswith('Dialogue:'):
+                    # 提取歌词文本（去除ASS标签）
+                    text = re.sub(r'{[^}]*}', '', line.split(',')[-1])
+                    lyrics.append(text)
             
-            # 估算字体大小
-            # max_width = 字幕最大宽度（像素）
-            # max_length = 最长行的显示单位
-            # 假设每个单位宽度约等于字体大小
-            estimated_font_size = int(max_width / (max_length * 1.1))  # 1.1 是安全系数，比之前小
+            if not lyrics:
+                return 60  # 降低默认大小
             
-            # 限制字体大小范围
-            min_font_size = 35  # 增加最小字体大小
-            max_font_size = base_font_size
+            # 创建一个临时图像来测试文本大小
+            img = Image.new('RGB', (1920, 1080))
+            draw = ImageDraw.Draw(img)
             
-            font_size = max(min(estimated_font_size, max_font_size), min_font_size)
+            # 二分查找合适的字体大小
+            min_size = 80  # 进一步增大最小字号
+            max_size = 300  # 大幅增加最大字体大小
+            target_width = 1850  # 接近屏幕宽度
             
-            print(f"字幕信息:")
-            print(f"最长行显示单位: {max_length}")
+            while min_size < max_size:
+                mid_size = (min_size + max_size + 1) // 2
+                font = ImageFont.truetype("msyh.ttc", mid_size)
+                
+                # 检查所有歌词行
+                is_size_ok = True
+                for text in lyrics:
+                    bbox = draw.textbbox((0, 0), text, font=font)
+                    width = bbox[2] - bbox[0]
+                    height = bbox[3] - bbox[1]
+                    
+                    # 最大限度放宽限制
+                    if width > target_width or height > 300:  # 大幅增加高度限制
+                        is_size_ok = False
+                        break
+                
+                if is_size_ok:
+                    min_size = mid_size
+                else:
+                    max_size = mid_size - 1
+            
+            # 完全不缩小
+            font_size = min_size  # 直接使用计算出的大小，不缩小
+            
+            # 打印调试信息
+            print(f"\n字体大小计算:")
+            print(f"最长歌词: {max(lyrics, key=len)}")
             print(f"计算得到字体大小: {font_size}")
+            
+            # 验证最终尺寸
+            font = ImageFont.truetype("msyh.ttc", font_size)
+            max_width = max(draw.textbbox((0, 0), text, font=font)[2] for text in lyrics)
+            print(f"最大文本宽度: {max_width}px (目标: {target_width}px)")
             
             return font_size
             
         except Exception as e:
             print(f"计算字体大小时出错: {str(e)}")
-            return base_font_size
+            return 60  # 降低默认大小
     
     def monitor_resources(self, stop_event):
         """监控系统资源使用情况"""
@@ -224,6 +250,24 @@ class MusicVideoGenerator:
         # 计算适合的字体大小
         font_size = self.calculate_max_font_size(self.ass_path)
         
+        # 调整字幕位置和缩放
+        style_params = [
+            f"FontSize={font_size}",
+            "MarginV=120",        # 增加垂直边距
+            "MarginL=160",        # 增加左边距
+            "MarginR=160",        # 增加右边距
+            "Alignment=8",        # 改为顶部对齐
+            "ScaleX=1",          # 不缩放
+            "ScaleY=1",          # 不缩放
+            "BorderStyle=1",      # 边框样式
+            "Bold=1",            # 加粗
+            "Outline=3",         # 增加描边宽度
+            "Shadow=1",          # 添加阴影
+            "ShadowDepth=2",     # 阴影深度
+            "PlayResX=1920",     # 指定分辨率
+            "PlayResY=1080"      # 指定分辨率
+        ]
+        
         # 检测显卡支持（静默执行）
         try:
             with open(os.devnull, 'w') as devnull:
@@ -266,7 +310,9 @@ class MusicVideoGenerator:
                         'audio_bitrate': bit_rate,
                         'ar': sample_rate,
                         'ac': channels,
-                        'vf': f"subtitles='{ass_path}':force_style='FontSize={font_size},ScaleX=1.5,ScaleY=1.5'",
+                        'vf': (f"subtitles='{ass_path}'"
+                              f":force_style='{','.join(style_params)}'"
+                              ":original_size=1920x1080"),  # 指定原始尺寸
                         'shortest': None,
                         'pix_fmt': 'yuv420p',
                         'r': 24,
@@ -406,6 +452,19 @@ def process_single_video(audio_path, ass_files, output_dir, similarity_threshold
             
             generator.generate_video()
             print("✓ 视频生成完成")
+            
+            # 删除对应的 ASS 文件
+            try:
+                # 获取原始 ASS 文件路径（而不是临时副本的路径）
+                original_ass_path = next(
+                    ass for ass in ass_files 
+                    if Path(ass).stem == Path(best_match).stem
+                )
+                os.remove(original_ass_path)
+                print(f"→ 已删除字幕文件: {Path(original_ass_path).name}")
+            except Exception as e:
+                print(f"! 删除字幕文件失败: {str(e)}")
+            
             return "success"
         else:
             if best_match:
