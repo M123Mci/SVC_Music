@@ -6,6 +6,7 @@ from typing import List, Tuple, Dict, Optional
 from dataclasses import dataclass
 import logging
 from datetime import datetime
+from difflib import SequenceMatcher
 
 # 修改日志配置
 logging.basicConfig(
@@ -25,51 +26,122 @@ class LyricLine:
     is_current: bool = False  # 是否是当前行
 
 class Config:
-    """KTV样式配置"""
+    """KTV字幕样式配置"""
     # 字体设置
     FONT_NAME = "微软雅黑"
-    FONT_SIZE = 80  # 歌词字体大小
-    TITLE_FONT_SIZE = 60  # 标题字体大小
-    BOLD = 1        # 加粗
-    OUTLINE = 4     # 描边宽度
+    FONT_SIZE = 80  # 主歌词大小
+    TITLE_FONT_SIZE = 60  # 标题大小
+    BOLD = 1
+    OUTLINE = 4  # 描边宽度
     
-    # 颜色设置（ASS格式：BGR）
-    CURRENT_COLOR = "&H00D4A8AF"     # 当前行颜色
-    OTHER_COLOR = "&H00FFFFFF"       # 其他行颜色
-    TITLE_COLOR = "&H00FFF0E0"      # 标题颜色（浅金色）
-    OUTLINE_COLOR = "&H00000000"     # 描边颜色
+    # 颜色设置 (BGR格式)
+    CURRENT_COLOR = "&H00D4A8AF"  # 当前行颜色（天蓝色）
+    OTHER_COLOR = "&H00FFFFFF"    # 其他行颜色（白色）
+    TITLE_COLOR = "&H00FFF0E0"    # 标题颜色（浅金色）
+    OUTLINE_COLOR = "&H00000000"  # 描边颜色（黑色）
     
-    # 位置设置（基于1080p）
-    TITLE_Y = 50               # 标题Y坐标
-    BOTTOM_Y1 = 900           # 歌词上面一行的Y坐标
-    BOTTOM_Y2 = 980           # 歌词下面一行的Y坐标
-    CENTER_X = 960            # 屏幕中心X坐标
-    MARGIN = 25               # 与中轴线的间距
-    RESOLUTION = "1920x1080"  # 视频分辨率
-    FADE_DURATION = 0.1       # 渐入渐出时间（秒）
+    # 位置设置 (1080p)
+    TITLE_Y = 50        # 标题位置
+    BOTTOM_Y1 = 900     # 上行位置
+    BOTTOM_Y2 = 980     # 下行位置
+    CENTER_X = 960      # 中心位置
+    MARGIN = 25         # 左右间距
     
-    # 计算左右位置
+    RESOLUTION = "1920x1080"
+    FADE_DURATION = 0.1  # 渐变时间(秒)
+    
     @classmethod
     def get_left_x(cls) -> int:
-        return cls.CENTER_X - cls.MARGIN  # 中轴线左侧
+        """获取左侧X坐标"""
+        return cls.CENTER_X - cls.MARGIN
         
     @classmethod
     def get_right_x(cls) -> int:
-        return cls.CENTER_X + cls.MARGIN  # 中轴线右侧
+        """获取右侧X坐标"""
+        return cls.CENTER_X + cls.MARGIN
 
 class LyricsConverter:
-    """歌词转换器主类"""
-    # 预编译正则表达式
-    LRC_TIME_PATTERN = re.compile(r'\[(\d{2}):(\d{2})\.(\d{2,3})\]')
-    SRT_PATTERN = re.compile(r'(\d+)\n(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})\n((?:.*\n)*?)\n')
+    """歌词转换器：将LRC/SRT转换为ASS格式"""
     
     def __init__(self):
-        # 修改输入输出路径
-        self.input_dir = Path("input")  # 输入根目录
-        self.output_dir = Path("middle/ass")  # 输出目录
+        self.input_dir = Path("input/lyrics")  # 歌词输入目录
+        self.output_dir = Path("middle/ass")   # ASS输出目录
+        self.video_dir = Path("output")        # 视频输出目录
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.fallback_encodings = ['utf-8', 'gbk', 'big5', 'shift-jis']
         
+    def convert_file(self, input_path: Path):
+        """转换单个歌词文件"""
+        try:
+            self.current_file = input_path.name
+            output_path = self.output_dir / f"{input_path.stem}.ass"
+            video_path = self.video_dir / f"{input_path.stem}.mp4"
+            
+            # 首先检查视频文件是否存在
+            if video_path.exists():
+                print(f"→ 视频已存在: {input_path.name}")
+                return "skipped"
+            
+            # 检查ASS文件是否已存在
+            if output_path.exists():
+                print(f"→ 字幕已存在: {input_path.name}")
+                return "skipped"
+            
+            print(f"\n{input_path.name}")
+            
+            # 读取并解析歌词
+            content = self.read_file(input_path)
+            lyrics = (self.parse_lrc(content) if input_path.suffix.lower() == '.lrc'  
+                     else self.parse_srt(content))
+            
+            # 生成ASS文件
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(self.generate_ass_header())
+                events = self.generate_events(lyrics)
+                f.write('\n'.join(events))
+                
+            print("✓ 转换完成")
+            return "converted"
+            
+        except Exception as e:
+            print(f"! 转换失败: {str(e)}")
+            raise
+
+    def process_all(self):
+        """批量处理所有歌词文件"""
+        if not self.input_dir.exists():
+            print(f"! 歌词目录不存在: {self.input_dir}")
+            return
+            
+        # 统计计数
+        stats = {'total': 0, 'skipped': 0, 'converted': 0, 'failed': 0}
+        
+        # 处理所有LRC和SRT文件
+        for pattern in ['**/*.lrc', '**/*.srt']:
+            for file_path in self.input_dir.glob(pattern):
+                stats['total'] += 1
+                try:
+                    result = self.convert_file(file_path)
+                    if result == "skipped":
+                        stats['skipped'] += 1
+                    else:
+                        stats['converted'] += 1
+                except Exception:
+                    stats['failed'] += 1
+                    continue
+        
+        # 输出统计结果
+        if stats['total'] > 0:
+            print("\n处理结果:")
+            if stats['total'] == stats['skipped']:
+                print("所有文件都已处理")
+            else:
+                print(f"总文件数: {stats['total']}")
+                print(f"已转换: {stats['converted']}")
+                print(f"已跳过: {stats['skipped']}")
+                print(f"失败: {stats['failed']}")
+        else:
+            print("\n未找到歌词文件")
+
     def detect_encoding(self, file_path: Path) -> tuple[str, bytes]:
         """检测文件编码，返回编码和文件内容"""
         try:
@@ -85,7 +157,7 @@ class LyricsConverter:
                 return detected_encoding, raw_data
                 
             # 置信度低时，尝试备选编码列表
-            for encoding in self.fallback_encodings:
+            for encoding in ['utf-8', 'gbk', 'big5', 'shift-jis']:
                 try:
                     raw_data.decode(encoding)
                     logging.info(f"使用备选编码 {encoding} 成功解码文件: {file_path}")
@@ -116,15 +188,18 @@ class LyricsConverter:
             
     def escape_special_chars(self, text: str) -> str:
         """处理特殊字符"""
-        replacements = {
-            '&': '&amp;',
-            '<': '&lt;',
-            '>': '&gt;',
-            '"': '&quot;',
-            "'": '&apos;'
-        }
-        for old, new in replacements.items():
-            text = text.replace(old, new)
+        # 先处理 HTML 实体
+        text = text.replace('&apos;', "'")
+        text = text.replace('&quot;', '"')
+        text = text.replace('&amp;', '&')
+        text = text.replace('&lt;', '<')
+        text = text.replace('&gt;', '>')
+        
+        # 处理其他特殊字符
+        text = text.replace('\\', '\\\\')
+        text = text.replace('{', '\\{')
+        text = text.replace('}', '\\}')
+        
         return text
         
     def parse_lrc(self, content: str) -> List[LyricLine]:
@@ -137,7 +212,7 @@ class LyricsConverter:
                     continue
                     
                 # 提取所有时间标签
-                matches = list(self.LRC_TIME_PATTERN.finditer(line))
+                matches = list(re.finditer(r'\[(\d{2}):(\d{2})\.(\d{2,3})\]', line))
                 if not matches:
                     continue
                     
@@ -147,11 +222,9 @@ class LyricsConverter:
                         minutes = int(match.group(1))
                         seconds = int(match.group(2))
                         ms = int(match.group(3))
-                        # 验证时间值的合法性
                         if minutes > 59 or seconds > 59 or ms > 999:
                             logging.warning(f"跳过无效时间标签: [{minutes}:{seconds}.{ms}]")
                             continue
-                        # 统一转换为秒
                         total_seconds = minutes * 60 + seconds + ms / (1000 if len(match.group(3)) == 3 else 100)
                         times.append(total_seconds)
                     except ValueError as e:
@@ -161,18 +234,19 @@ class LyricsConverter:
                 if not times:
                     continue
                     
-                # 提取歌词文本
-                text = self.LRC_TIME_PATTERN.sub('', line).strip()
+                # 提取并清理歌词文本
+                text = re.sub(r'\[(\d{2}):(\d{2})\.(\d{2,3})\]', '', line).strip()
                 if not text:  # 跳过空歌词
                     continue
                     
+                # 使用新的清理方法处理文本
                 text = self.escape_special_chars(text)
                 
-                # 处理多时间标签，确保时间间隔合理
+                # 处理多时间标签
                 for i, start_time in enumerate(times):
                     end_time = times[i + 1] if i + 1 < len(times) else start_time + 5
                     if end_time <= start_time:
-                        end_time = start_time + 5  # 确保结束时间大于开始时间
+                        end_time = start_time + 5
                     lyrics.append(LyricLine(start_time, end_time, text))
                     
             if not lyrics:
@@ -234,7 +308,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         """解析SRT格式字幕"""
         lyrics = []
         
-        matches = self.SRT_PATTERN.finditer(content)
+        matches = re.finditer(r'(\d+)\n(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})\n((?:.*\n)*?)\n', content)
         for match in matches:
             try:
                 start_time = self.parse_srt_time(match.group(2))
@@ -382,93 +456,117 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         # 假设每个字符宽度为FONT_SIZE/2
         return int(len(text) * Config.FONT_SIZE / 2)
 
-    def convert_file(self, input_path: Path):
-        """转换单个文件"""
-        self.current_file = input_path  # 保存当前处理的文件名，供标题解析使用
-        start_time = datetime.now()
-        
-        try:
-            # 生成输出文件路径
-            output_path = self.output_dir / f"{input_path.stem}.ass"
-            
-            # 检查输出文件是否已存在
-            if output_path.exists():
-                logging.info(f"文件已存在，跳过转换: {output_path}")
-                return
-            
-            logging.info(f"开始处理文件: {input_path}")
-            
-            # 检查文件大小
-            file_size = input_path.stat().st_size
-            if file_size == 0:
-                raise ValueError("文件为空")
-            if file_size > 10 * 1024 * 1024:  # 10MB
-                raise ValueError("文件太大")
-                
-            content = self.read_file(input_path)
-            
-            # 根据文件类型选择解析方法
-            suffix = input_path.suffix.lower()
-            if suffix == '.lrc':
-                lyrics = self.parse_lrc(content)
-            elif suffix == '.srt':
-                lyrics = self.parse_srt(content)
-            else:
-                raise ValueError(f"不支持的文件类型: {suffix}")
-                
-            # 检查歌词数量
-            if len(lyrics) > 1000:
-                logging.warning(f"歌词行数过多: {len(lyrics)}行")
-                
-            # 生成ASS文件
-            with open(output_path, 'w', encoding='utf-8') as f:
-                f.write(self.generate_ass_header())
-                events = self.generate_events(lyrics)
-                f.write('\n'.join(events))
-                
-            process_time = (datetime.now() - start_time).total_seconds()
-            logging.info(f"文件处理完成: {output_path}, 耗时: {process_time:.2f}秒")
-            
-        except Exception as e:
-            logging.error(f"处理文件失败: {input_path}, 错误: {str(e)}")
-            raise
+def clean_text(text: str) -> str:
+    """清理文本中的特殊字符"""
+    # 替换 HTML 实体
+    text = text.replace('&apos;', "'")
+    text = text.replace('&quot;', '"')
+    text = text.replace('&amp;', '&')
+    text = text.replace('&lt;', '<')
+    text = text.replace('&gt;', '>')
+    
+    # 移除 ASS 标签
+    text = re.sub(r'{\\[^}]*}', '', text)
+    
+    # 标准化标点符号
+    text = text.replace('，', ',')
+    text = text.replace('。', '.')
+    text = text.replace('：', ':')
+    text = text.replace('；', ';')
+    text = text.replace('"', '"')
+    text = text.replace('"', '"')
+    text = text.replace(''', "'")
+    text = text.replace(''', "'")
+    
+    # 移除多余的空格和标点
+    text = re.sub(r'\s+', ' ', text)  # 多个空格替换为单个
+    text = re.sub(r'[,\s]*,[,\s]*', ', ', text)  # 规范化逗号
+    text = re.sub(r'[.\s]*\.[.\s]*', '. ', text)  # 规范化句点
+    text = text.strip()
+    
+    return text
 
-    def process_all(self):
-        """处理所有文件"""
-        if not self.input_dir.exists():
-            raise FileNotFoundError(f"输入目录不存在: {self.input_dir}")
+def convert_lrc_to_ass(lrc_path: str, output_dir: str = None) -> str:
+    """将LRC文件转换为ASS格式"""
+    if output_dir is None:
+        output_dir = 'middle/ass'
+    
+    # 确保输出目录存在
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # 读取LRC文件
+    with open(lrc_path, 'r', encoding='utf-8') as f:
+        lrc_content = f.readlines()
+    
+    # 提取歌曲信息
+    title = Path(lrc_path).stem
+    title = clean_text(title)  # 清理标题中的特殊字符
+    
+    # 创建ASS文件内容
+    ass_content = [
+        '[Script Info]',
+        'Title: KTV Style Lyrics',
+        'ScriptType: v4.00+',
+        'WrapStyle: 0',
+        'ScaledBorderAndShadow: yes',
+        'YCbCr Matrix: TV.601',
+        'PlayResX: 1920',
+        'PlayResY: 1080',
+        '',
+        '[V4+ Styles]',
+        'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
+        'Style: Current,微软雅黑,80,&H00D4A8AF,&H000000FF,&H00000000,&H00000000,1,0,1,4,0,2,0,0,0,1',
+        'Style: Other,微软雅黑,80,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,0,1,4,0,2,0,0,0,1',
+        'Style: Title,微软雅黑,60,&H00FFF0E0,&H000000FF,&H00000000,&H00000000,1,0,1,4,0,8,0,0,0,1',
+        '',
+        '[Events]',
+        'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text'
+    ]
+    
+    # 添加标题
+    ass_content.append(f'Dialogue: 0,0:00:00.00,99:00:00.00,Title,,0,0,0,,{{\\pos(960,50)\\an8}}{title}')
+    
+    # 解析LRC时间标记和歌词
+    lyrics = []
+    for line in lrc_content:
+        line = line.strip()
+        if not line or line.startswith('[ti:') or line.startswith('[ar:'):
+            continue
             
-        total_files = 0
-        skipped_files = 0
-        converted_files = 0
-        failed_files = 0
+        match = re.match(r'\[(\d+):(\d+)\.(\d+)\](.*)', line)
+        if match:
+            minutes, seconds, centiseconds, text = match.groups()
+            start_time = int(minutes) * 60 + int(seconds) + int(centiseconds) / 100
+            text = clean_text(text)  # 清理歌词中的特殊字符
+            if text:  # 只添加非空歌词
+                lyrics.append((start_time, text))
+    
+    # 生成ASS对话行
+    for i in range(len(lyrics)):
+        start_time = lyrics[i][0]
+        text = lyrics[i][1]
         
-        # 递归搜索所有子目录中的LRC和SRT文件
-        for pattern in ['**/*.[lL][rR][cC]', '**/*.[sS][rR][tT]']:
-            for file_path in self.input_dir.glob(pattern):
-                total_files += 1
-                try:
-                    # 检查对应的ASS文件是否存在
-                    ass_path = self.output_dir / f"{file_path.stem}.ass"
-                    if ass_path.exists():
-                        logging.info(f"跳过已存在的文件: {ass_path}")
-                        skipped_files += 1
-                        continue
-                        
-                    self.convert_file(file_path)
-                    converted_files += 1
-                    
-                except Exception as e:
-                    logging.error(f"处理文件失败: {file_path}, 错误: {str(e)}")
-                    failed_files += 1
-                    continue
+        # 计算结束时间
+        if i < len(lyrics) - 1:
+            end_time = lyrics[i + 1][0]
+        else:
+            end_time = start_time + 5  # 最后一行默认显示5秒
         
-        # 输出处理统计
-        logging.info(f"\n处理完成:")
-        logging.info(f"总文件数: {total_files}")
-        logging.info(f"已跳过: {skipped_files}")
-        logging.info(f"已转换: {converted_files}")
-        logging.info(f"失败: {failed_files}")
+        # 转换时间格式
+        start = f'{int(start_time/3600):01d}:{int(start_time/60%60):02d}:{start_time%60:05.2f}'
+        end = f'{int(end_time/3600):01d}:{int(end_time/60%60):02d}:{end_time%60:05.2f}'
+        
+        # 添加当前行和下一行
+        ass_content.append(f'Dialogue: 0,{start},{end},Current,,0,0,0,,{{\\pos(985,980)\\an4}}{text}')
+        if i < len(lyrics) - 1:
+            ass_content.append(f'Dialogue: 0,{start},{end},Other,,0,0,0,,{{\\pos(935,900)\\an6}}{lyrics[i+1][1]}')
+    
+    # 写入ASS文件
+    output_path = os.path.join(output_dir, f'{title}.ass')
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(ass_content))
+    
+    return output_path
 
 if __name__ == "__main__":
     converter = LyricsConverter()

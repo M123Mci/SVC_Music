@@ -312,11 +312,21 @@ class MusicVideoGenerator:
                 pass
 
 def clean_filename(filename: str) -> str:
-    """清理文件名，移除特殊字符和空格，便于比较"""
-    # 移除扩展名
-    filename = os.path.splitext(filename)[0]
-    # 移除特殊字符，只保留字母、数字和中文字符
-    return re.sub(r'[^\w\u4e00-\u9fff]', '', filename.lower())
+    """清理文件名，只保留ffmpeg支持的字符"""
+    # 保留文件扩展名
+    name, ext = os.path.splitext(filename)
+    
+    # 替换规则
+    # 1. 移除所有撇号和引号
+    name = name.replace("'", "").replace('"', "")
+    # 2. 保留字母、数字、中文字符、连字符和空格
+    name = re.sub(r'[^\w\u4e00-\u9fff\- ]', '', name)
+    # 3. 将多个空格替换为单个空格
+    name = re.sub(r'\s+', ' ', name)
+    # 4. 去除首尾空格
+    name = name.strip()
+    
+    return name + ext
 
 def calculate_similarity(str1: str, str2: str) -> float:
     """计算两个字符串的相似度"""
@@ -327,11 +337,25 @@ def calculate_similarity(str1: str, str2: str) -> float:
     return SequenceMatcher(None, str1_clean, str2_clean).ratio()
 
 def process_single_video(audio_path, ass_files, output_dir, similarity_threshold, processed_count, total_files):
-    """处理单个视频的函数"""
+    """处理单个视频"""
     audio_name = Path(audio_path).stem
-    print(f"\n{audio_name}")  # 简化输出，只显示文件名
+    print(f"\n{audio_name}")
     
-    # 检查输出文件是否已存在
+    # 清理文件名
+    clean_name = clean_filename(audio_name)
+    if clean_name != audio_name:
+        print(f"→ 清理文件名: {audio_name} -> {clean_name}")
+        try:
+            # 重命名音频文件
+            new_audio_path = Path(audio_path).parent / f"{clean_name}{Path(audio_path).suffix}"
+            os.rename(audio_path, new_audio_path)
+            audio_path = str(new_audio_path)
+            audio_name = clean_name
+        except Exception as e:
+            print(f"! 重命名音频文件失败: {str(e)}")
+            return "failed"
+    
+    # 检查是否已存在
     output_path = os.path.join(output_dir, f"{audio_name}.mp4")
     if os.path.exists(output_path):
         print("→ 已存在，跳过")
@@ -339,21 +363,39 @@ def process_single_video(audio_path, ass_files, output_dir, similarity_threshold
         print("-" * 50)
         return "skipped"
     
-    # 寻找最匹配的字幕文件
+    # 寻找匹配的字幕文件
     best_match = None
     best_similarity = 0
     
+    # 创建字幕文件副本以避免修改原始文件
+    ass_files_copy = []
     for ass_path in ass_files:
         ass_name = Path(ass_path).stem
-        similarity = calculate_similarity(audio_name, ass_name)
-        
+        clean_ass_name = clean_filename(ass_name)
+        if clean_ass_name != ass_name:
+            try:
+                # 在临时目录创建副本
+                temp_dir = Path("temp")
+                temp_dir.mkdir(exist_ok=True)
+                new_ass_path = temp_dir / f"{clean_ass_name}{Path(ass_path).suffix}"
+                shutil.copy2(ass_path, new_ass_path)
+                ass_files_copy.append(str(new_ass_path))
+            except Exception as e:
+                print(f"! 创建字幕文件副本失败: {str(e)}")
+                continue
+        else:
+            ass_files_copy.append(ass_path)
+    
+    # 使用清理后的字幕文件进行匹配
+    for ass_path in ass_files_copy:
+        similarity = calculate_similarity(audio_name, Path(ass_path).stem)
         if similarity > best_similarity:
             best_similarity = similarity
             best_match = ass_path
     
-    # 如果相似度达到阈值，开始生成视频
-    if best_similarity >= similarity_threshold:
-        try:
+    # 生成视频
+    try:
+        if best_similarity >= similarity_threshold:
             print(f"→ 匹配字幕: {Path(best_match).name} ({best_similarity:.0%})")
             
             generator = MusicVideoGenerator(
@@ -363,24 +405,27 @@ def process_single_video(audio_path, ass_files, output_dir, similarity_threshold
             )
             
             generator.generate_video()
-            
-            # 删除使用过的 ass 文件
-            try:
-                os.remove(best_match)
-            except Exception as e:
-                print(f"! 字幕文件删除失败")
-            
+            print("✓ 视频生成完成")
             return "success"
-            
-        except Exception as e:
-            print(f"! 处理失败: {str(e)}")
-            return "failed"
-    else:
-        if best_match:
-            print(f"→ 未找到匹配字幕 (最接近: {Path(best_match).name}, {best_similarity:.0%})")
         else:
-            print("→ 未找到匹配字幕")
-        return "no_subtitle"
+            if best_match:
+                print(f"→ 无匹配字幕 ({Path(best_match).name}, {best_similarity:.0%})")
+            else:
+                print("→ 无匹配字幕")
+            print(f"进度: {processed_count}/{total_files}")
+            print("-" * 50)
+            return "no_subtitle"
+            
+    except Exception as e:
+        print(f"! 处理失败: {str(e)}")
+        return "failed"
+    finally:
+        # 清理临时文件
+        try:
+            if 'temp_dir' in locals():
+                shutil.rmtree(temp_dir, ignore_errors=True)
+        except:
+            pass
 
 def main():
     # 设置输入输出目录
