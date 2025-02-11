@@ -1,0 +1,10 @@
+{
+    "paths": {
+        "music_input": "C:/Project/KaLaOK/input/music",
+        "lyrics_input": "input/lyrics",
+        "images_input": "input/images",
+        "videos_output": "output/videos",
+        "music_output": "output/music",
+        "qq_music_download": "C:\\Users\\Administrator\\Music\\VipSongsDownload"
+    }
+}
